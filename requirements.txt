@@ -13,6 +13,7 @@ pydantic-settings==2.1.0      # Settings management with Pydantic
 # Anthropic ADK & AI
 # ============================================================================
 anthropic==0.7.8              # Anthropic API client for Claude models
+google-generativeai==0.3.1    # Google Gemini API client for RAG
 # Note: anthropic-adk will be added in Milestone 2 when available
 
 # ============================================================================

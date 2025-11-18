@@ -1,0 +1,92 @@
+[
+  {
+    "test_id": "TC001",
+    "query": "I sent 500 bob to KPLC.",
+    "expected_intent": "parse_sms",
+    "expected_tool": "sms_parser",
+    "criteria": "Must extract Amount=500 and Payee=KPLC from the SMS-like text.",
+    "category": "sms_parsing",
+    "difficulty": "easy"
+  },
+  {
+    "test_id": "TC002",
+    "query": "Who owes me money? Show me my unpaid invoices.",
+    "expected_intent": "information_retrieval",
+    "expected_tool": "get_unpaid_invoices",
+    "criteria": "Must retrieve unpaid invoices with essential fields (invoice_id, customer_name, amount). Should NOT send payment requests.",
+    "category": "invoice_retrieval",
+    "difficulty": "easy"
+  },
+  {
+    "test_id": "TC003",
+    "query": "Send a payment reminder to John Mwangi for Invoice #INV001.",
+    "expected_intent": "action",
+    "expected_tool": "send_payment_request",
+    "criteria": "Must check invoice status first (idempotency). If already paid or processing, should NOT trigger M-Pesa. Must use proper phone format (254XXXXXXXXX).",
+    "category": "payment_action",
+    "difficulty": "medium"
+  },
+  {
+    "test_id": "TC004",
+    "query": "What are my spending patterns this month?",
+    "expected_intent": "insights",
+    "expected_tool": "rag_insights",
+    "criteria": "Must use RAG to analyze transaction history. Should provide insights about spending categories, trends, or top expenses.",
+    "category": "financial_insights",
+    "difficulty": "easy"
+  },
+  {
+    "test_id": "TC005",
+    "query": "I received 2500 from Mary Njoki via M-Pesa yesterday.",
+    "expected_intent": "parse_sms",
+    "expected_tool": "sms_parser",
+    "criteria": "Must extract Amount=2500, Sender/Payee=Mary Njoki, Transaction Type=received/credit.",
+    "category": "sms_parsing",
+    "difficulty": "medium"
+  },
+  {
+    "test_id": "TC006",
+    "query": "Send payment requests to all customers with overdue invoices.",
+    "expected_intent": "multi_step",
+    "expected_tool": "get_unpaid_invoices",
+    "criteria": "Must FIRST call get_unpaid_invoices to retrieve the list. Then should iterate and call send_payment_request for each. Must respect idempotency (skip if already processing).",
+    "category": "multi_step_action",
+    "difficulty": "hard"
+  },
+  {
+    "test_id": "TC007",
+    "query": "How much did I spend on utilities last month?",
+    "expected_intent": "insights",
+    "expected_tool": "rag_insights",
+    "criteria": "Must query transaction history for utilities category. Should provide specific amount or breakdown.",
+    "category": "financial_insights",
+    "difficulty": "medium"
+  },
+  {
+    "test_id": "TC008",
+    "query": "Remind Sarah Kamau to pay Invoice #INV005.",
+    "expected_intent": "action",
+    "expected_tool": "send_payment_request",
+    "criteria": "Must check if Invoice #INV005 exists and is unpaid. Must verify customer name matches. Should use idempotency protection (check if request already sent).",
+    "category": "payment_action",
+    "difficulty": "medium"
+  },
+  {
+    "test_id": "TC009",
+    "query": "Parse this SMS: 'RM12345678 Confirmed. You have sent Ksh3,500.00 to SAFARICOM LTD on 15/11/2025 at 10:23 AM'",
+    "expected_intent": "parse_sms",
+    "expected_tool": "sms_parser",
+    "criteria": "Must extract: Amount=3500, Payee=SAFARICOM LTD, Transaction Type=sent/debit, Date=15/11/2025, Time=10:23 AM, Reference=RM12345678.",
+    "category": "sms_parsing",
+    "difficulty": "hard"
+  },
+  {
+    "test_id": "TC010",
+    "query": "What's the total amount owed to me across all unpaid invoices?",
+    "expected_intent": "information_retrieval",
+    "expected_tool": "get_unpaid_invoices",
+    "criteria": "Must retrieve all unpaid invoices and calculate the total amount. Should provide clear summary (e.g., 'You have 7 unpaid invoices totaling KES 427,574.37').",
+    "category": "invoice_retrieval",
+    "difficulty": "medium"
+  }
+]

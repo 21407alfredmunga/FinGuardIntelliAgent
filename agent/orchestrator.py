@@ -1,397 +1,640 @@
 """
-FinGuard IntelliAgent - ADK Agent Orchestrator
-==============================================
+FinGuard IntelliAgent - Agent Orchestrator
+==========================================
 
-This module implements the core ADK agent orchestration logic for FinGuard IntelliAgent.
-The orchestrator coordinates between multiple tools, manages conversation context,
-and generates intelligent responses to user queries.
+This module implements the main FinGuard IntelliAgent orchestrator that
+coordinates the "Think, Act, Observe" loop with all tools and services.
 
-Milestone 1 Scope:
-    - Placeholder structure for ADK agent
-    - Tool registry framework
-    - Basic orchestration pattern
-    
-Full Implementation: Milestone 2+
+Key Concepts Implemented:
+1. **Think, Act, Observe Loop**: Standard agentic reasoning loop
+   [Ref: Intro to Agents p.11]
+2. **Context Lifecycle**: Fetch → Prepare → Invoke → Update
+   [Ref: Context Engineering p.9]
+3. **Observability**: Structured logging of agent trajectory
+   [Ref: Prototype to Production p.30]
 
 Author: Alfred Munga
 License: MIT
 """
 
-from typing import List, Dict, Any, Optional
-from dataclasses import dataclass
-from enum import Enum
 import logging
+import sys
+from pathlib import Path
+from typing import Dict, Any, List, Optional
+from datetime import datetime
+import json
+
+# Add project root to path
+project_root = Path(__file__).parent.parent
+sys.path.append(str(project_root))
+
+# Import Google Gemini
+import google.generativeai as genai
+from google.generativeai.types import FunctionDeclaration, Tool
+
+# Import agent components
+from agent.memory import MemoryBank, UserProfile
+from backend.utils.logger import AgentLogger, SessionStore
+
+# Import tools
+from tools.sms_parser_tool import SMSParserTool
+from tools.rag_insights_tool import RAGInsightsTool
+from tools.invoice_ops import GetUnpaidInvoicesTool, SendPaymentRequestTool
 
 # Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 
-# ============================================================================
-# Enums and Constants
-# ============================================================================
-
-class ToolType(Enum):
-    """Enumeration of available tool types in the FinGuard system."""
-    SMS_PARSER = "sms_parser"
-    INSIGHTS_GENERATOR = "insights_generator"
-    INVOICE_COLLECTOR = "invoice_collector"
-
-
-class AgentState(Enum):
-    """Enumeration of possible agent states during execution."""
-    IDLE = "idle"
-    PROCESSING = "processing"
-    WAITING_FOR_TOOL = "waiting_for_tool"
-    GENERATING_RESPONSE = "generating_response"
-    ERROR = "error"
-
-
-# ============================================================================
-# Data Models
-# ============================================================================
-
-@dataclass
-class ToolDefinition:
+class FinGuardIntelliAgent:
     """
-    Definition of a tool that the agent can use.
+    The main FinGuard IntelliAgent orchestrator.
+    
+    This class implements the "Think, Act, Observe" loop, coordinating
+    all tools and managing context lifecycle for multi-turn conversations.
+    
+    Architecture:
+    ```
+    User Query
+        ↓
+    [Fetch Context from Memory]
+        ↓
+    [Prepare System Prompt + History]
+        ↓
+    [Think, Act, Observe Loop]
+        ↓  ↑ (iterate until done)
+        ↓  ↑
+    [Update Session & Memory]
+        ↓
+    Final Response
+    ```
     
     Attributes:
-        name: Unique identifier for the tool
-        description: Human-readable description of tool functionality
-        tool_type: Type of tool from ToolType enum
-        parameters: Expected input parameters for the tool
-        enabled: Whether the tool is currently enabled
-    """
-    name: str
-    description: str
-    tool_type: ToolType
-    parameters: Dict[str, Any]
-    enabled: bool = True
-
-
-@dataclass
-class ConversationMessage:
-    """
-    Represents a message in the conversation history.
-    
-    Attributes:
-        role: Message sender role (user/assistant/tool)
-        content: Message content
-        timestamp: When the message was created
-        metadata: Additional message metadata
-    """
-    role: str
-    content: str
-    timestamp: str
-    metadata: Optional[Dict[str, Any]] = None
-
-
-@dataclass
-class ToolCallResult:
-    """
-    Result returned from a tool execution.
-    
-    Attributes:
-        tool_name: Name of the tool that was executed
-        success: Whether the tool execution was successful
-        result: The output data from the tool
-        error: Error message if execution failed
-    """
-    tool_name: str
-    success: bool
-    result: Optional[Any] = None
-    error: Optional[str] = None
-
-
-# ============================================================================
-# Agent Orchestrator Class
-# ============================================================================
-
-class FinGuardOrchestrator:
-    """
-    Main orchestrator class for the FinGuard IntelliAgent.
-    
-    This class coordinates:
-    - Tool selection and execution
-    - Conversation context management
-    - ADK agent interaction
-    - Response generation
-    
-    Note: Full ADK integration will be implemented in Milestone 2.
+        model: Google Gemini model instance
+        memory: MemoryBank for user profiles and context
+        session_store: SessionStore for conversation history
+        tools: Dictionary of available tools
+        max_iterations: Maximum loop iterations (prevents infinite loops)
     """
     
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(
+        self,
+        api_key: str,
+        memory: Optional[MemoryBank] = None,
+        session_store: Optional[SessionStore] = None,
+        max_iterations: int = 5
+    ):
         """
-        Initialize the FinGuard orchestrator.
+        Initialize the FinGuard IntelliAgent.
         
         Args:
-            api_key: Anthropic API key (will be required in Milestone 2)
+            api_key: Google Gemini API key
+            memory: MemoryBank instance (creates new if not provided)
+            session_store: SessionStore instance (creates new if not provided)
+            max_iterations: Maximum iterations for Think-Act-Observe loop
         """
-        self.api_key = api_key
-        self.state = AgentState.IDLE
-        self.conversation_history: List[ConversationMessage] = []
-        self.available_tools: Dict[str, ToolDefinition] = {}
+        self.max_iterations = max_iterations
         
-        # Register available tools
-        self._register_tools()
+        # Initialize memory and session store
+        self.memory = memory or MemoryBank()
+        self.session_store = session_store or SessionStore()
         
-        logger.info("FinGuard Orchestrator initialized (Milestone 1 - Placeholder)")
+        # Initialize tools
+        self._initialize_tools()
+        
+        # Initialize Gemini model with tools
+        self._initialize_model(api_key)
+        
+        logger.info("FinGuardIntelliAgent initialized successfully")
     
-    def _register_tools(self) -> None:
-        """
-        Register all available tools with the orchestrator.
-        
-        In Milestone 2, this will integrate actual tool implementations
-        and provide them to the ADK agent for selection.
-        """
-        # SMS Parser Tool
-        sms_parser = ToolDefinition(
-            name="sms_parser",
-            description=(
-                "Parses SMS messages from M-Pesa and Airtel Money to extract "
-                "structured transaction data including amount, type, sender/recipient, "
-                "and timestamp."
-            ),
-            tool_type=ToolType.SMS_PARSER,
-            parameters={
-                "sms_text": {"type": "string", "required": True},
-                "service_provider": {"type": "string", "required": False}
-            }
-        )
-        
-        # Insights Generator Tool
-        insights_tool = ToolDefinition(
-            name="insights_generator",
-            description=(
-                "Analyzes transaction data to generate financial insights including "
-                "cash flow analysis, spending patterns, revenue trends, and "
-                "actionable recommendations."
-            ),
-            tool_type=ToolType.INSIGHTS_GENERATOR,
-            parameters={
-                "transaction_data": {"type": "array", "required": True},
-                "analysis_type": {"type": "string", "required": False},
-                "time_period": {"type": "string", "required": False}
-            }
-        )
-        
-        # Invoice Collection Tool
-        invoice_tool = ToolDefinition(
-            name="invoice_collector",
-            description=(
-                "Manages invoice tracking and automated collection including "
-                "outstanding invoice identification, follow-up message generation, "
-                "and payment status monitoring."
-            ),
-            tool_type=ToolType.INVOICE_COLLECTOR,
-            parameters={
-                "action": {"type": "string", "required": True},
-                "invoice_id": {"type": "string", "required": False},
-                "customer_info": {"type": "object", "required": False}
-            }
-        )
-        
-        # Add tools to registry
-        self.available_tools[sms_parser.name] = sms_parser
-        self.available_tools[insights_tool.name] = insights_tool
-        self.available_tools[invoice_tool.name] = invoice_tool
-        
-        logger.info(f"Registered {len(self.available_tools)} tools")
-    
-    def get_available_tools(self) -> List[ToolDefinition]:
-        """
-        Get list of all available tools.
-        
-        Returns:
-            List of ToolDefinition objects for enabled tools
-        """
-        return [tool for tool in self.available_tools.values() if tool.enabled]
-    
-    async def process_query(self, user_query: str) -> Dict[str, Any]:
-        """
-        Process a user query through the ADK agent.
-        
-        This is a placeholder implementation. Milestone 2 will include:
-        - ADK agent initialization
-        - Tool selection logic
-        - Multi-turn conversation handling
-        - Context management
-        - Structured response generation
-        
-        Args:
-            user_query: Natural language query from the user
-            
-        Returns:
-            Dict containing response and metadata
-            
-        Raises:
-            NotImplementedError: This feature is not yet implemented
-        """
-        logger.info(f"Processing query (Milestone 1 placeholder): {user_query}")
-        
-        self.state = AgentState.PROCESSING
-        
-        # TODO Milestone 2: Initialize ADK agent with Claude Sonnet 3.5
-        # TODO Milestone 2: Convert tools to ADK tool format
-        # TODO Milestone 2: Submit query to agent
-        # TODO Milestone 2: Handle tool calls
-        # TODO Milestone 2: Generate final response
-        
-        self.state = AgentState.IDLE
-        
-        return {
-            "status": "not_implemented",
-            "message": "ADK agent integration will be implemented in Milestone 2",
-            "query_received": user_query,
-            "available_tools": [tool.name for tool in self.get_available_tools()]
+    def _initialize_tools(self) -> None:
+        """Initialize all available tools."""
+        self.tools = {
+            'sms_parser': SMSParserTool(),
+            'rag_insights': RAGInsightsTool(memory=self.memory),
+            'get_unpaid_invoices': GetUnpaidInvoicesTool(),
+            'send_payment_request': SendPaymentRequestTool()
         }
+        
+        logger.info(f"Initialized {len(self.tools)} tools: {list(self.tools.keys())}")
     
-    async def execute_tool(
-        self, 
-        tool_name: str, 
-        parameters: Dict[str, Any]
-    ) -> ToolCallResult:
+    def _initialize_model(self, api_key: str) -> None:
         """
-        Execute a specific tool with given parameters.
+        Initialize Google Gemini model with function calling.
+        
+        Args:
+            api_key: Google Gemini API key
+        """
+        # Configure Gemini
+        genai.configure(api_key=api_key)
+        
+        # Define function declarations for Gemini
+        functions = [
+            FunctionDeclaration(
+                name="parse_sms",
+                description=(
+                    "Parse an M-Pesa or Airtel Money SMS message to extract "
+                    "structured transaction data (type, amount, sender, recipient, etc.). "
+                    "Use this tool when the user provides an SMS message or mentions "
+                    "receiving a transaction notification."
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "sms_text": {
+                            "type": "string",
+                            "description": "The SMS message text to parse"
+                        }
+                    },
+                    "required": ["sms_text"]
+                }
+            ),
+            FunctionDeclaration(
+                name="get_financial_insights",
+                description=(
+                    "Query financial data and get insights about spending, budgets, "
+                    "transactions, or receive financial advice. Use this tool when the "
+                    "user asks questions like 'How much did I spend on X?', 'Am I over "
+                    "budget?', 'Show me recent transactions', or 'What financial advice "
+                    "do you have?'"
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "The user's financial question or query"
+                        }
+                    },
+                    "required": ["query"]
+                }
+            ),
+            FunctionDeclaration(
+                name="get_unpaid_invoices",
+                description=(
+                    "Retrieve a list of unpaid or overdue invoices. Use this tool when "
+                    "the user asks 'Who owes me money?', 'Show me unpaid invoices', "
+                    "'What are my receivables?', or similar questions about outstanding "
+                    "payments. This tool ONLY retrieves information; it does NOT send "
+                    "any messages or payment requests."
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "user_id": {
+                            "type": "string",
+                            "description": "User ID (defaults to 'default_user' if not specified)"
+                        },
+                        "include_pending": {
+                            "type": "boolean",
+                            "description": "Whether to include invoices with pending payments (default: false)"
+                        }
+                    },
+                    "required": []
+                }
+            ),
+            FunctionDeclaration(
+                name="send_payment_request",
+                description=(
+                    "Initiate an M-Pesa STK Push payment request to collect payment for "
+                    "a specific invoice. ⚠️ IMPORTANT: Use this tool ONLY when the user "
+                    "explicitly confirms they want to request payment, such as saying "
+                    "'Send payment request to X', 'Collect payment from Y', or 'Request "
+                    "payment for invoice Z'. DO NOT use this for just viewing invoices. "
+                    "This tool has idempotency protection and will refuse duplicate requests."
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "invoice_id": {
+                            "type": "string",
+                            "description": "The invoice ID to collect payment for (e.g., 'INV-2025-1804')"
+                        }
+                    },
+                    "required": ["invoice_id"]
+                }
+            )
+        ]
+        
+        # Create tool for Gemini
+        gemini_tool = Tool(function_declarations=functions)
+        
+        # Initialize model with tools
+        self.model = genai.GenerativeModel(
+            model_name='gemini-2.5-flash',
+            tools=[gemini_tool]
+        )
+        
+        logger.info(f"Gemini model initialized with {len(functions)} function declarations")
+    
+    def _build_system_prompt(self, user_profile: Optional[UserProfile] = None) -> str:
+        """
+        Build the system prompt with persona and context.
+        
+        This implements the "Persona" best practice from the ADK whitepaper.
+        [Ref: Intro to Agents p.23]
+        
+        Args:
+            user_profile: User profile for personalization
+            
+        Returns:
+            System prompt string
+        """
+        # Base persona
+        prompt = """You are FinGuard, a helpful and intelligent financial assistant designed specifically for Kenyan Small and Medium Enterprises (SMEs).
+
+Your capabilities:
+- Parse M-Pesa and Airtel Money SMS messages to extract transaction data
+- Provide financial insights about spending, budgets, and cash flow
+- Track unpaid invoices and outstanding payments
+- Initiate payment collection via M-Pesa STK Push
+
+Your personality:
+- Professional yet friendly and approachable
+- Proactive in suggesting actions (but always ask for confirmation before taking actions)
+- Clear and concise in explanations
+- Knowledgeable about Kenyan business practices and M-Pesa
+
+Important guidelines:
+1. **Always confirm before taking actions**: When initiating payment requests or other actions, summarize what you're about to do and get user confirmation.
+2. **Be explicit about tool selection**: Explain why you're using a specific tool.
+3. **Handle errors gracefully**: If a tool fails, explain the issue clearly and suggest alternatives.
+4. **Respect idempotency**: Never send duplicate payment requests. If a payment is already processing, inform the user clearly.
+5. **Provide context**: When showing financial data, add context (e.g., "This is 20% over your budget").
+
+"""
+        
+        # Add user profile if available
+        if user_profile:
+            prompt += f"""
+User Profile:
+- Name: {user_profile.name}
+- Business Type: {user_profile.business_type}
+- Location: {user_profile.location}
+
+"""
+        
+        # Add current date/time for context
+        current_time = datetime.now()
+        prompt += f"""
+Current Date and Time: {current_time.strftime('%B %d, %Y at %I:%M %p EAT')}
+
+Remember: Always be helpful, accurate, and respectful of the user's time and business needs.
+"""
+        
+        return prompt
+    
+    def run(
+        self,
+        user_query: str,
+        user_id: str = "default_user",
+        trace_logger: Optional[AgentLogger] = None
+    ) -> Dict[str, Any]:
+        """
+        Execute the agent with a user query using the Think-Act-Observe loop.
+        
+        This implements the core agentic loop with full observability.
+        
+        Process:
+        1. **Fetch Context**: Retrieve user profile and memories
+        2. **Prepare Prompt**: Build system instruction with context
+        3. **Think-Act-Observe Loop**: Iteratively reason and use tools
+        4. **Update Context**: Save conversation to session history
+        
+        Args:
+            user_query: The user's question or request
+            user_id: User identifier for context retrieval
+            trace_logger: Optional logger (creates new if not provided)
+            
+        Returns:
+            Dict with:
+            {
+                'success': True/False,
+                'response': str (final answer),
+                'trajectory': List[Dict] (execution trace),
+                'trace_id': str,
+                'error': Optional[str]
+            }
+        """
+        # Initialize logger
+        if trace_logger is None:
+            trace_logger = AgentLogger()
+        
+        try:
+            # ================================================================
+            # STEP 1: FETCH CONTEXT (Context Lifecycle)
+            # ================================================================
+            logger.info(f"[STEP 1] Fetching context for user: {user_id}")
+            
+            # Get user profile
+            user_profile = self.memory.user_profile
+            
+            # Get conversation history
+            history = self.session_store.get_history(user_id)
+            
+            # Log context fetch
+            trace_logger.log_context({
+                'user_id': user_id,
+                'user_profile': {
+                    'name': user_profile.name if user_profile else None,
+                    'business': user_profile.business_type if user_profile else None
+                },
+                'history_turns': len(history)
+            })
+            
+            # ================================================================
+            # STEP 2: PREPARE PROMPT (System Instruction + History)
+            # ================================================================
+            logger.info("[STEP 2] Preparing system prompt and chat history")
+            
+            system_prompt = self._build_system_prompt(user_profile)
+            
+            # Build chat history for Gemini
+            chat_history = []
+            for turn in history:
+                chat_history.append({
+                    'role': turn['role'],
+                    'parts': [turn['content']]
+                })
+            
+            # Start chat session
+            chat = self.model.start_chat(history=chat_history)
+            
+            # ================================================================
+            # STEP 3: THINK-ACT-OBSERVE LOOP
+            # ================================================================
+            logger.info("[STEP 3] Starting Think-Act-Observe loop")
+            
+            # Combine system prompt with user query
+            full_query = f"{system_prompt}\n\nUser Query: {user_query}"
+            
+            iteration = 0
+            response = None
+            
+            while iteration < self.max_iterations:
+                iteration += 1
+                logger.info(f"[LOOP] Iteration {iteration}/{self.max_iterations}")
+                
+                # === THINK: Send query to Gemini ===
+                try:
+                    response = chat.send_message(full_query)
+                except Exception as e:
+                    error_msg = f"Gemini API error: {str(e)}"
+                    trace_logger.log_error(error_msg)
+                    return {
+                        'success': False,
+                        'error': error_msg,
+                        'trace_id': trace_logger.trace_id
+                    }
+                
+                # Check if model wants to call functions
+                if not response.candidates:
+                    error_msg = "No response candidates from model"
+                    trace_logger.log_error(error_msg)
+                    return {
+                        'success': False,
+                        'error': error_msg,
+                        'trace_id': trace_logger.trace_id
+                    }
+                
+                candidate = response.candidates[0]
+                
+                # Check for function calls
+                if not candidate.content.parts:
+                    error_msg = "No content parts in response"
+                    trace_logger.log_error(error_msg)
+                    return {
+                        'success': False,
+                        'error': error_msg,
+                        'trace_id': trace_logger.trace_id
+                    }
+                
+                # Process each part
+                has_function_calls = False
+                function_responses = []
+                
+                for part in candidate.content.parts:
+                    # If it's text, we might be done
+                    if hasattr(part, 'text') and part.text:
+                        trace_logger.log_think(
+                            f"Model reasoning: {part.text}",
+                            metadata={'iteration': iteration}
+                        )
+                    
+                    # If it's a function call, execute it
+                    if hasattr(part, 'function_call') and part.function_call:
+                        has_function_calls = True
+                        function_call = part.function_call
+                        
+                        # === ACT: Execute tool ===
+                        tool_name = function_call.name
+                        tool_args = dict(function_call.args)
+                        
+                        trace_logger.log_act(
+                            tool_name=tool_name,
+                            tool_input=tool_args,
+                            metadata={'iteration': iteration}
+                        )
+                        
+                        # Execute the tool
+                        tool_result = self._execute_tool(tool_name, tool_args)
+                        
+                        # === OBSERVE: Log tool output ===
+                        trace_logger.log_observe(
+                            tool_name=tool_name,
+                            tool_output=tool_result,
+                            success=tool_result.get('success', True),
+                            metadata={'iteration': iteration}
+                        )
+                        
+                        # Prepare function response for Gemini
+                        function_responses.append({
+                            'name': tool_name,
+                            'response': tool_result
+                        })
+                
+                # If no function calls, we're done
+                if not has_function_calls:
+                    # Extract final text response
+                    final_text = ""
+                    for part in candidate.content.parts:
+                        if hasattr(part, 'text'):
+                            final_text += part.text
+                    
+                    trace_logger.log_final(
+                        final_text,
+                        metadata={
+                            'total_iterations': iteration,
+                            'tools_used': len([log for log in trace_logger.logs if log['step'] == 'act'])
+                        }
+                    )
+                    
+                    # ========================================================
+                    # STEP 4: UPDATE CONTEXT (Save to session)
+                    # ========================================================
+                    logger.info("[STEP 4] Updating session context")
+                    
+                    self.session_store.add_turn(user_id, 'user', user_query)
+                    self.session_store.add_turn(user_id, 'assistant', final_text)
+                    
+                    return {
+                        'success': True,
+                        'response': final_text,
+                        'trajectory': trace_logger.get_trajectory(),
+                        'trace_id': trace_logger.trace_id,
+                        'summary': trace_logger.get_summary()
+                    }
+                
+                # Send function results back to model
+                if function_responses:
+                    # Build function response message using Google's protos
+                    import google.generativeai.protos as protos
+                    
+                    response_parts = []
+                    for func_resp in function_responses:
+                        response_parts.append(
+                            protos.Part(function_response=protos.FunctionResponse(
+                                name=func_resp['name'],
+                                response=func_resp['response']
+                            ))
+                        )
+                    
+                    # Continue conversation with function results
+                    try:
+                        response = chat.send_message(
+                            response_parts
+                        )
+                    except Exception as e:
+                        error_msg = f"Error sending function results: {str(e)}"
+                        trace_logger.log_error(error_msg)
+                        return {
+                            'success': False,
+                            'error': error_msg,
+                            'trace_id': trace_logger.trace_id
+                        }
+            
+            # If we hit max iterations
+            warning_msg = f"Reached maximum iterations ({self.max_iterations}). Stopping."
+            trace_logger.log_error(warning_msg)
+            logger.warning(warning_msg)
+            
+            return {
+                'success': False,
+                'error': warning_msg,
+                'trace_id': trace_logger.trace_id,
+                'trajectory': trace_logger.get_trajectory()
+            }
+        
+        except Exception as e:
+            error_msg = f"Unexpected error in agent execution: {str(e)}"
+            trace_logger.log_error(error_msg, {'exception': str(e)})
+            logger.error(error_msg, exc_info=True)
+            
+            return {
+                'success': False,
+                'error': error_msg,
+                'trace_id': trace_logger.trace_id
+            }
+    
+    def _execute_tool(self, tool_name: str, tool_args: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Execute a tool by name with given arguments.
+        
+        This method handles tool routing and error handling.
         
         Args:
             tool_name: Name of the tool to execute
-            parameters: Parameters to pass to the tool
+            tool_args: Arguments for the tool
             
         Returns:
-            ToolCallResult containing execution outcome
+            Tool execution result
+        """
+        try:
+            # Route to appropriate tool
+            if tool_name == 'parse_sms':
+                tool = self.tools['sms_parser']
+                sms_text = tool_args.get('sms_text', '')
+                return tool.parse(sms_text)
             
-        Raises:
-            ValueError: If tool name is not recognized
-            NotImplementedError: Tool execution not yet implemented
-        """
-        if tool_name not in self.available_tools:
-            raise ValueError(f"Unknown tool: {tool_name}")
+            elif tool_name == 'get_financial_insights':
+                tool = self.tools['rag_insights']
+                query = tool_args.get('query', '')
+                return tool.run(query)
+            
+            elif tool_name == 'get_unpaid_invoices':
+                from tools.invoice_ops import GetUnpaidInvoicesInput
+                tool = self.tools['get_unpaid_invoices']
+                input_data = GetUnpaidInvoicesInput(
+                    user_id=tool_args.get('user_id', 'default_user'),
+                    include_pending=tool_args.get('include_pending', False)
+                )
+                return tool.run(input_data)
+            
+            elif tool_name == 'send_payment_request':
+                from tools.invoice_ops import SendPaymentRequestInput
+                tool = self.tools['send_payment_request']
+                input_data = SendPaymentRequestInput(
+                    invoice_id=tool_args['invoice_id']
+                )
+                return tool.run(input_data)
+            
+            else:
+                return {
+                    'success': False,
+                    'error': f"Unknown tool: {tool_name}"
+                }
         
-        tool = self.available_tools[tool_name]
-        
-        if not tool.enabled:
-            return ToolCallResult(
-                tool_name=tool_name,
-                success=False,
-                error="Tool is currently disabled"
-            )
-        
-        logger.info(f"Executing tool: {tool_name} (Milestone 1 placeholder)")
-        
-        # TODO Milestone 2: Import and execute actual tool implementations
-        # TODO Milestone 2: Validate parameters against tool schema
-        # TODO Milestone 2: Handle tool errors gracefully
-        # TODO Milestone 2: Return structured results
-        
-        return ToolCallResult(
-            tool_name=tool_name,
-            success=False,
-            error="Tool execution will be implemented in Milestone 2"
-        )
-    
-    def add_to_conversation(
-        self, 
-        role: str, 
-        content: str, 
-        metadata: Optional[Dict[str, Any]] = None
-    ) -> None:
-        """
-        Add a message to the conversation history.
-        
-        Args:
-            role: Message role (user/assistant/tool)
-            content: Message content
-            metadata: Optional additional metadata
-        """
-        from datetime import datetime
-        
-        message = ConversationMessage(
-            role=role,
-            content=content,
-            timestamp=datetime.utcnow().isoformat(),
-            metadata=metadata or {}
-        )
-        
-        self.conversation_history.append(message)
-        logger.debug(f"Added message to conversation: {role}")
-    
-    def get_conversation_history(self) -> List[ConversationMessage]:
-        """
-        Retrieve the current conversation history.
-        
-        Returns:
-            List of ConversationMessage objects
-        """
-        return self.conversation_history
-    
-    def clear_conversation(self) -> None:
-        """Clear the conversation history."""
-        self.conversation_history = []
-        logger.info("Conversation history cleared")
-    
-    def get_status(self) -> Dict[str, Any]:
-        """
-        Get current status of the orchestrator.
-        
-        Returns:
-            Dict containing orchestrator status information
-        """
-        return {
-            "state": self.state.value,
-            "tools_available": len(self.available_tools),
-            "tools_enabled": len(self.get_available_tools()),
-            "conversation_length": len(self.conversation_history),
-            "implementation_status": "Milestone 1 - Placeholder"
-        }
+        except Exception as e:
+            logger.error(f"Error executing tool {tool_name}: {str(e)}", exc_info=True)
+            return {
+                'success': False,
+                'error': f"Tool execution failed: {str(e)}"
+            }
 
 
 # ============================================================================
-# Factory Functions
-# ============================================================================
-
-def create_orchestrator(api_key: Optional[str] = None) -> FinGuardOrchestrator:
-    """
-    Factory function to create and configure a FinGuard orchestrator.
-    
-    Args:
-        api_key: Anthropic API key
-        
-    Returns:
-        Configured FinGuardOrchestrator instance
-    """
-    return FinGuardOrchestrator(api_key=api_key)
-
-
-# ============================================================================
-# Example Usage (for testing)
+# Example Usage
 # ============================================================================
 
 if __name__ == "__main__":
-    """
-    Example usage of the FinGuard orchestrator.
-    This is for development and testing purposes only.
-    """
-    import asyncio
+    """Test the orchestrator."""
+    import os
+    from dotenv import load_dotenv
     
-    async def test_orchestrator():
-        """Test the orchestrator with sample queries."""
-        # Create orchestrator instance
-        orchestrator = create_orchestrator()
-        
-        # Print status
-        print("Orchestrator Status:")
-        print(orchestrator.get_status())
-        print("\nAvailable Tools:")
-        for tool in orchestrator.get_available_tools():
-            print(f"  - {tool.name}: {tool.description}")
-        
-        # Test query processing
-        print("\nTesting query processing...")
-        result = await orchestrator.process_query(
-            "Parse this M-Pesa SMS: RB12KLM confirmed you received KES 5000 from..."
-        )
-        print(f"Result: {result}")
+    # Load environment variables
+    load_dotenv()
     
-    # Run the test
-    asyncio.run(test_orchestrator())
+    api_key = os.getenv('GEMINI_API_KEY')
+    if not api_key:
+        print("❌ Error: GEMINI_API_KEY not found in .env")
+        sys.exit(1)
+    
+    print("=" * 70)
+    print("FinGuard IntelliAgent Orchestrator Test")
+    print("=" * 70)
+    
+    # Initialize agent
+    print("\n1️⃣ Initializing agent...")
+    agent = FinGuardIntelliAgent(api_key=api_key)
+    print("✅ Agent initialized!")
+    
+    # Test query 1: Get unpaid invoices
+    print("\n2️⃣ Testing: Get unpaid invoices")
+    print("-" * 70)
+    result = agent.run(
+        user_query="Who owes me money? Show me my unpaid invoices.",
+        user_id="test_user"
+    )
+    
+    if result['success']:
+        print(f"\n✅ Success!")
+        print(f"Response: {result['response'][:200]}...")
+        print(f"\nTools used: {len([log for log in result['trajectory'] if log['step'] == 'act'])}")
+    else:
+        print(f"\n❌ Failed: {result.get('error')}")
+    
+    print("\n" + "=" * 70)
+    print("✅ Test complete!")

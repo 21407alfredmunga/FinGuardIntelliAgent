@@ -10,13 +10,20 @@
     "amount_paid": 0.0,
     "amount_outstanding": 67354.0,
     "currency": "KES",
-    "status": "overdue",
+    "status": "processing",
     "description": "Mobile App Development",
     "payment_date": "",
     "payment_method": "",
     "notes": "Payment terms: Net 13 days",
     "created_at": "2025-08-21T11:23:40.433533",
-    "updated_at": "2025-11-18T11:23:40.433569"
+    "updated_at": "2025-11-18T13:31:54.616498",
+    "payment_info": {
+      "checkout_request_id": "ws_CO_34777d3f9f20469aa635",
+      "merchant_request_id": "45bc2e78-d916-41e2-b5ff-464c958edd32",
+      "payment_initiated_at": "2025-11-18T13:31:54.616493",
+      "phone_number": "254781876999",
+      "amount": 67354.0
+    }
   },
   {
     "invoice_id": "INV-2025-7736",
