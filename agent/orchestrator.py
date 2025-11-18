@@ -512,8 +512,11 @@ Remember: Always be helpful, accurate, and respectful of the user's time and bus
                         trace_logger.log_error(error_msg)
                         return {
                             'success': False,
+                            'response': error_msg,
                             'error': error_msg,
-                            'trace_id': trace_logger.trace_id
+                            'trace_id': trace_logger.trace_id,
+                            'trace_logger': trace_logger,
+                            'trajectory': trace_logger.get_trajectory()
                         }
             
             # If we hit max iterations
@@ -523,8 +526,10 @@ Remember: Always be helpful, accurate, and respectful of the user's time and bus
             
             return {
                 'success': False,
+                'response': "I've reached my maximum thinking steps. Let me summarize what I found.",
                 'error': warning_msg,
                 'trace_id': trace_logger.trace_id,
+                'trace_logger': trace_logger,
                 'trajectory': trace_logger.get_trajectory()
             }
         
@@ -535,8 +540,10 @@ Remember: Always be helpful, accurate, and respectful of the user's time and bus
             
             return {
                 'success': False,
+                'response': "I encountered an error while processing your request.",
                 'error': error_msg,
-                'trace_id': trace_logger.trace_id
+                'trace_id': trace_logger.trace_id,
+                'trace_logger': trace_logger
             }
     
     def _execute_tool(self, tool_name: str, tool_args: Dict[str, Any]) -> Dict[str, Any]:
@@ -557,7 +564,16 @@ Remember: Always be helpful, accurate, and respectful of the user's time and bus
             if tool_name == 'parse_sms':
                 tool = self.tools['sms_parser']
                 sms_text = tool_args.get('sms_text', '')
-                return tool.parse(sms_text)
+                result = tool.parse_sms(sms_text)
+                if result is None:
+                    return {
+                        'success': False,
+                        'error': 'Could not parse SMS message. Please ensure it is a valid M-Pesa or bank SMS.'
+                    }
+                return {
+                    'success': True,
+                    'parsed_data': result
+                }
             
             elif tool_name == 'get_financial_insights':
                 tool = self.tools['rag_insights']
