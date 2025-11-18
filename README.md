@@ -1280,17 +1280,9 @@ This project is licensed under the **MIT License**.
 ## 📞 Contact & Support
 
 **Author**: Alfred Munga  
-**Email**: 21407alfredmunga@daystar.ac.ke  
+**Email**: 21407alfredmunga@gmail.com 
 **GitHub**: [@21407alfredmunga](https://github.com/21407alfredmunga)  
 **Project**: [FinGuardIntelliAgent](https://github.com/21407alfredmunga/FinGuardIntelliAgent)
-
-### Getting Help
-
-- 📖 **Documentation**: Check the milestone summaries and quick start guides
-- 🐛 **Bug Reports**: [Open an issue](https://github.com/21407alfredmunga/FinGuardIntelliAgent/issues)
-- 💡 **Feature Requests**: [Open an issue](https://github.com/21407alfredmunga/FinGuardIntelliAgent/issues) with "enhancement" label
-
----
 
 ## 🎯 Project Status
 
